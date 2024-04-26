@@ -1,97 +1,70 @@
-from flask import Flask, request, render_template_string
-from model import make_prediction
-import os
+import pandas as pd
+import seaborn as sns
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.pipeline import Pipeline
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+import neattext.functions as nfx
+from joblib import dump
 
-app = Flask(__name__)
+# Load dataset
+df = pd.read_csv("./data/emotion_dataset_raw.csv")
 
-HTML_FORM = '''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>Emotion Prediction</title>
-    <style>
-        body {
-            font-family: 'Arial', sans-serif;
-            background-color: #f4f4f9;
-            margin: 40px;
-            color: #333;
-        }
-        .container {
-            width: 80%;
-            max-width: 600px;
-            margin: 0 auto;
-            padding: 20px;
-            background-color: white;
-            border-radius: 8px;
-            box-shadow: 0 0 10px rgba(0,0,0,0.1);
-        }
-        h1 {
-            color: #5D3FD3;
-            text-align: center;
-        }
-        form {
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-        }
-        textarea {
-            padding: 10px;
-            border-radius: 4px;
-            border: 1px solid #ddd;
-            resize: none;
-        }
-        button {
-            cursor: pointer;
-            padding: 10px 15px;
-            color: white;
-            background-color: #5D3FD3;
-            border: none;
-            border-radius: 4px;
-            transition: background-color 0.3s;
-        }
-        button:hover {
-            background-color: #412a9c;
-        }
-        .results {
-            margin-top: 20px;
-            padding: 15px;
-            background-color: #f0f0f0;
-            border-left: 5px solid #5D3FD3;
-            border-radius: 4px;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Enter Text for Emotion Prediction</h1>
-        <form action="/predict" method="post">
-            <textarea name="sample_text" rows="4" cols="50" placeholder="Type your text here..."></textarea>
-            <br>
-            <button type="submit">Submit</button>
-        </form>
+# Data cleaning using Neattext
+df['Clean_Text'] = df['Text'].apply(lambda x: nfx.remove_userhandles(x))
+df['Clean_Text'] = df['Clean_Text'].apply(lambda x: nfx.remove_stopwords(x))
 
-        {% if prediction %}
-            <div class="results">
-                <h2>Prediction Results</h2>
-                <p><strong>Logistic Regression:</strong> {{ prediction['Logistic Regression'] }}</p>
-                <p><strong>Naive Bayes:</strong> {{ prediction['Naive Bayes'] }}</p>
-            </div>
-        {% endif %}
-    </div>
-</body>
-</html>
-'''
+# Display data distribution
+print(df.head())
+print(df['Emotion'].value_counts())
+sns.countplot(x='Emotion', data=df)
 
-@app.route('/')
-def index():
-    return render_template_string(HTML_FORM)
-@app.route('/predict', methods=['POST'])
-def predict():
-    if request.method == 'POST':
-        sample_text = request.form['sample_text']
-        prediction = make_prediction(sample_text)
-        return render_template_string(HTML_FORM, prediction=prediction)
+# Prepare features and labels
+X = df['Clean_Text']
+y = df['Emotion']
 
-if __name__ == '__main__':
-    app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+# Split data into training and test sets
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+
+# Creating pipelines for Logistic Regression and Naive Bayes
+pipeline_lr = Pipeline([
+    ('tfidf', TfidfVectorizer(max_features=1000)),
+    ('classifier', LogisticRegression())
+])
+
+pipeline_nb = Pipeline([
+    ('tfidf', TfidfVectorizer(max_features=1000)),
+    ('classifier', MultinomialNB())
+])
+
+param_grid_lr = {
+    'classifier__C': [0.1, 1, 10]
+}
+grid_lr = GridSearchCV(pipeline_lr, param_grid_lr, cv=3, verbose=2, n_jobs=-1)
+grid_lr.fit(X_train, y_train)
+
+param_grid_nb = {
+    'classifier__alpha': [0.01, 0.1, 1]
+}
+grid_nb = GridSearchCV(pipeline_nb, param_grid_nb, cv=3, verbose=2, n_jobs=-1)
+grid_nb.fit(X_train, y_train)
+
+print("Best parameters for Logistic Regression:", grid_lr.best_params_)
+print("Best cross-validation score for Logistic Regression: {:.2f}".format(grid_lr.best_score_))
+print("Accuracy on test set for Logistic Regression:", accuracy_score(y_test, grid_lr.predict(X_test)))
+print(classification_report(y_test, grid_lr.predict(X_test)))
+
+print("Best parameters for Naive Bayes:", grid_nb.best_params_)
+print("Best cross-validation score for Naive Bayes: {:.2f}".format(grid_nb.best_score_))
+print("Accuracy on test set for Naive Bayes:", accuracy_score(y_test, grid_nb.predict(X_test)))
+print(classification_report(y_test, grid_nb.predict(X_test)))
+
+
+sample_text = "Recession is hittinh hard"
+print("Predicted emotion with Logistic Regression:", grid_lr.predict([sample_text]))
+print("Predicted emotion with Naive Bayes:", grid_nb.predict([sample_text]))
+
+dump(grid_lr.best_estimator_, 'logistic_regression_model.pkl')
+dump(grid_nb.best_estimator_, 'naive_bayes_model.pkl')
